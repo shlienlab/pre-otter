@@ -50,7 +50,7 @@ singularity exec -e \
     -p my_counts_prefix \
     -t my_API_token \
     -e email1@host.com,email2@host.com \
-    -s True
+    -s
 ```
 
 Using fastq files for the same sample sequenced across multiple lanes:
@@ -65,7 +65,7 @@ singularity exec -e
     -p /path/to/my/output/directory/my_counts_prefix
     -t my_API_token \
     -e email1@host.com \
-    -s True
+    -s
 ```
 #### On HPC with Slurm Scheduler ####
 ```
@@ -95,6 +95,7 @@ singularity exec -e \
 -r2 /data/SRR30668570_2.fastq.gz \
 -p SRR30668570 \
 -t e01918ac92401___Your_Otter_Web_App_API_TOKEN___1ef8800fa163e7415e4
+-s
 ```
 
 ### Who do I talk to? ###
