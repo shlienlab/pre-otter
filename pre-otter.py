@@ -1,332 +1,154 @@
 #!/usr/bin/env python3
 
 import argparse
-import asyncio
-import gzip
-import multiprocessing
+import logging
+import configparser
+import sys
 import os
-from typing import Tuple
-
 import pandas as pd
 import requests as reqs
-import subprocess
-import shutil
 import tempfile
 
-from pathlib import Path
+from scripts import short_read, long_read
 
-REF_GENOME_VERSION = "hg38"
+# Set up logging configuration to log to both terminal and file
+logging_dir = "/output"
+if not os.path.exists(logging_dir):
+    logging_dir = os.getcwd()
+    print(f"/output directory not found for logging. Using current directory instead: {logging_dir}")
 
-def check_files_exist(fastqs: str) -> list[str] | None:
-    """
-    Test that fastq files exist.
-    :param fastqs: (str) Filepath to fastq file.
-    :return: list of file path strings.
-    """
-    files = fastqs.split(',')
-    for file in files:
-        if not os.path.exists(file):
-            return None
-    return files
-
-
-async def uncompress_file(file: str, out_dir: str) -> str:
-    """
-    Used to uncompress gz files required by the pipeline held in the container.
-    :param file: (str) File path to the file to be uncompressed.
-    :param out_dir: (str) directory for the file to be uncompressed to.
-    :return: (str) The uncompressed file.
-    """
-    this_file_base_no_ext = Path(file).stem
-    output_file = os.path.join(out_dir, this_file_base_no_ext)
-    if os.path.isfile(output_file):
-        # file already exists, return now
-        return output_file
-    with gzip.open(file, 'rb') as f_in:
-        with open(output_file, 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-    return output_file
-
-
-async def concat_fastqs(files: list, tmp_dir: str, output_file: str) -> str:
-    """
-    Concatenate fastq files into a single file.
-    :param files: (list) file paths of fqstq files.
-    :param tmp_dir: (str) Temporary directory for storing intermediate files.
-    :param output_file: (str) Name of the output file.
-    :return: (str) Path to the output file.
-    """
-    output_file = os.path.join(tmp_dir, output_file)
-    with open(output_file, 'wb') as outfile:
-        for file in files:
-            with open(file, 'rb') as infile:
-                shutil.copyfileobj(infile, outfile)
-    return output_file
-
-
-def run_fastp(this_fastq1: str, this_fastq2: str, tmp_dir: str) -> tuple[str, str] | None:
-    """
-    Run the fastp tool to trim the reads
-    :param this_fastq1: (str) filepath of read1 file.
-    :param this_fastq2: (str) filepath of read2 file.
-    :param tmp_dir: (str) Temporary directory for storing intermediate files.
-    :return: (tuple) Read1 and Read2 file that have been trimmed.
-    """
-    out_fq1 = f"{tmp_dir}/fastp_out_R1.fastq.gz"
-    out_fq2 = f"{tmp_dir}/fastp_out_R2.fastq.gz"
-
-    command = [f"fastp -l 35 --in1 {this_fastq1} --out1 {out_fq1} --in2 {this_fastq2} --out2 {out_fq2}"]
-    print(command)
-    completion = subprocess.run(command, shell=True, check=True)
-    if completion.returncode != 0:
-        return None
-    return out_fq1, out_fq2
-
-
-async def generate_genome(genome_dir: str, fasta: str, gtf: str) -> str | None:
-    """
-    Run the start command to generate the STAR index used for alignment
-    :param genome_dir: (str) The directory to store the index
-    :param fasta: (str) File path of the reference fasta file.
-    :param gtf: (str) File path of the reference GTF file.
-    :return: (str) The directory path of the index
-    """
-    # First check to see if the files already exist.
-    file_missing = False
-    files_required = ["chrLength.txt", "chrName.txt", "exonGeTrInfo.tab", "geneInfo.tab", "genomeParameters.txt", "SA",
-                      "sjdbInfo.txt", "sjdbList.out.tab", "chrNameLength.txt", "chrStart.txt", "exonInfo.tab", "Genome",
-                      "SAindex", "sjdbList.fromGTF.out.tab", "transcriptInfo.tab"]
-    for file in files_required:
-        if not os.path.isfile(os.path.join(genome_dir, file)):
-            file_missing = True
-    if not file_missing:
-        return genome_dir
-
-    # They don't so carry on
-    cpu_count = multiprocessing.cpu_count()
-
-    command = [f"STAR --runThreadN {cpu_count} --runMode genomeGenerate --genomeDir {genome_dir} "
-               f"--genomeFastaFiles {fasta} --sjdbGTFfile {gtf}"]
-    print(command)
-    completion = subprocess.run(command, shell=True, check=True)
-    if completion.returncode != 0:
-        return None
-    print(next(os.walk(genome_dir))[2])
-    return genome_dir
-
-
-# def decompress_gz_files(root_dir):
-#     """
-#
-#     :param root_dir:
-#     :return:
-#     """
-#     for root, dirs, files in os.walk(root_dir):
-#         for file in files:
-#             if file.endswith('.gz'):
-#                 file_path = os.path.join(root, file)
-#                 with gzip.open(file_path, 'rb') as f_in:
-#                     with open(file_path[:-3], 'wb') as f_out:  # Decompressed file will have the original name without the .gz extension
-#                         f_out.write(f_in.read())
-#                 os.remove(file_path)  # Remove the original compressed file
-
-
-async def rsem_prepare_reference(ref_dir: str, fasta: str, gtf: str):
-    """
-    Prepare the files that RSEM requires to run.
-    :param ref_dir: (str) The directory to store the files.
-    :param fasta: (str) The path to the reference fasta file.
-    :param gtf: (str) The path to the reference GTF file.
-    :return: (str) The path ot the directory the RSEM files are stored.
-    """
-    ## First check to see if the files already exist.
-    file_missing = False
-    files_required = [f"{REF_GENOME_VERSION}.chrlist", f"{REF_GENOME_VERSION}.grp", f"{REF_GENOME_VERSION}.idx.fa",
-                      f"{REF_GENOME_VERSION}.n2g.idx.fa", f"{REF_GENOME_VERSION}.seq", f"{REF_GENOME_VERSION}.ti",
-                      f"{REF_GENOME_VERSION}.transcripts.fa"]
-    for file in files_required:
-        if not os.path.isfile(os.path.join(ref_dir, file)):
-            file_missing = True
-    if not file_missing:
-        return ref_dir
-
-    # They don't so carry on
-
-    cpu_count = multiprocessing.cpu_count()
-    command = [f"rsem-prepare-reference --gtf {gtf} --num-threads {cpu_count} {fasta} {ref_dir}/{REF_GENOME_VERSION}"]
-    print(command)
-    completion = subprocess.run(command, shell=True, check=True)
-    if completion.returncode != 0:
-        return None
-    print(next(os.walk(ref_dir))[2])
-    return ref_dir
-
-
-def run_star(genome_dir: str, read1: str, read2: str, tmp_dir: str):
-    """
-    Run the star aligner on the fastq files.
-    :param genome_dir: (str) The directory to store the index
-    :param read1: (str) filepath of read1 file.
-    :param read2: (str) filepath of read2 file.
-    :param tmp_dir: (str) The temporary directory for intermediate files.
-    :return: (str) The path ot the bam file output of STAR.
-    """
-    cpu_count = multiprocessing.cpu_count()
-    command = [f"STAR --runMode alignReads --runThreadN {cpu_count} --genomeDir {genome_dir} "
-               f"--readFilesIn {read1} {read2} --outFileNamePrefix {tmp_dir}/moose_rna --outSAMunmapped Within "
-               f"--quantMode TranscriptomeSAM --outSAMattributes NH HI AS NM MD --outFilterType BySJout "
-               f"--outFilterMultimapNmax 20 --outFilterMismatchNmax 999 --outFilterMismatchNoverReadLmax 0.04 "
-               f"--alignIntronMin 20 --alignIntronMax 1000000 --alignMatesGapMax 1000000 --alignSJoverhangMin 8 "
-               f"--alignSJDBoverhangMin 1 --sjdbScore 1 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c "
-               f"--limitOutSJcollapsed 5500000 --limitBAMsortRAM 48000000000"]
-    print(command)
-    completion = subprocess.run(command, shell=True, check=True)
-    if completion.returncode != 0:
-        return None
-    return f"{tmp_dir}/moose_rnaAligned.toTranscriptome.out.bam"
-
-
-def run_rsem(tmp_dir: str, bam_file: str, output_dir: str, prefix: str):
-    """
-    Run the RSEM expression calculations.
-    :param tmp_dir: (str) The temporary directory to store intermediate files.
-    :param bam_file: (str) The filepath to the bam file to have reads counted.
-    :param output_dir: (str) The output directory to store results.
-    :param prefix: (str) The prefix to use for output files created by RSEM.
-    :return: (str) The path to the *.genes.results file from RSEM.
-    """
-    cpu_count = multiprocessing.cpu_count()
-    command = [f"rsem-calculate-expression --quiet --no-qualities --num-threads {cpu_count} --paired-end "
-               f"--forward-prob 0.5 --seed-length 25 --fragment-length-mean -1 --no-bam-output --bam {bam_file} "
-               f"{tmp_dir}/{REF_GENOME_VERSION} /output/{prefix}"]
-    print(command)
-    completion = subprocess.run(command, shell=True, check=True)
-    if completion.returncode != 0:
-        return None
-    return f"/output/{prefix}.genes.results"
-
-
-def submit_to_otter(token: str, tpm: str, email: list = None, save: bool = False) -> None:
-    """
-    Submits the data TPM file to the otter web app throug hthe API.
-    :param token: (str) API token for the account to be used for submission.
-    :param tpm: (str) The filepath to the RSEM TPM file.
-    :param email: (list) A list of email addresses that the otter web app will notify of results completion.
-    :param save: (bool) A switch to allow the otter web app to save the TPM file sent to it.
-    :return: None
-    """
-    df = pd.read_csv(tpm, sep='\t')
-    data = df.to_dict(orient='list')
-    name = tpm.split('/')[-1]
-
-    headers = {'Authorization': f'Bearer {token}'}
-    if email is None:
-        post_data = {'version': 'otter', 'data': data, 'name': name, "save": save}
-    else:
-        post_data = {'version': 'otter', 'data': data, 'name': name, 'share_with': email, "save": save}
-    r = reqs.post('https://otter.ccm.sickkids.ca/api/inference', json=post_data, headers=headers)
-    if r.status_code == 200:
-        print(f"{name} have been submitted to otter.")
-    else:
-        print(r.status_code, r.text)
-    return None
-
-
-async def main(this_read1s: list, this_read2s: list, tmp_dir: str, prefix: str, token: str, save: bool, email: list) -> None:
-    """
-    Run the workflow of tasks
-    :param this_read1s: (list) filepaths of read1 files.
-    :param this_read2s: (list) filepaths of read2 files.
-    :param tmp_dir: (str) path of temporary directory for storing intermediate files.
-    :param prefix: (str) prefix used on output files.
-    :param token: (str) API token for the otter web app.
-    :param save: (bool) Flag for telling otter web app to save the TPM file data.
-    :param email: (list) Email addresses to notify when otter results are ready.
-    :return: None
-    """
-    gtf = lambda: uncompress_file(file="/opt/gencode.v23.annotation.gtf.gz", out_dir="/reference")
-    fasta = lambda: uncompress_file(file="/opt/hg38.fa.gz", out_dir="/reference")
-
-    uncompress_results = await asyncio.gather(
-        fasta(),
-        gtf(),
+try:
+    logging.basicConfig(
+        level=logging.INFO,  # Minimum level to capture
+        format='%(asctime)s - %(levelname)s - %(message)s',  # Log format
+        datefmt='%Y-%m-%d %H:%M:%S %p %Z',  # Date format
+        handlers=[
+            logging.FileHandler(os.path.join(logging_dir, "pre-otter.log")),   # Log to a file
+            logging.StreamHandler()           # Log to the console (terminal)
+        ]
     )
-    my_fasta = uncompress_results[0]
-    my_gtf = uncompress_results[1]
-
-    read1 = lambda: concat_fastqs(files=this_read1s, tmp_dir=tmp_dir, output_file="read1.fastq.gz")
-    read2 = lambda: concat_fastqs(files=this_read2s, tmp_dir=tmp_dir, output_file="read2.fastq.gz")
-
-    genome_dir = lambda: generate_genome(genome_dir="/reference", fasta=my_fasta, gtf=my_gtf)
-    rsem_dir = lambda: rsem_prepare_reference(ref_dir="/reference", fasta=my_fasta, gtf=my_gtf)
-
-    results = await asyncio.gather(
-        read1(),
-        read2(),
-        genome_dir(),
-        rsem_dir(),
-    )
-    my_read1 = results[0]
-    my_read2 = results[1]
-    my_references = results[2]
-    my_genome_dir = results[3]
-
-    if my_references is None:
-        print(f"References and indexes not present.")
-        exit(1)
-
-    print(results)
-
-    my_cut_fq1, my_cut_fq2 = run_fastp(this_fastq1=my_read1, this_fastq2=my_read2, tmp_dir=tmp_dir)
-
-    # Now run Star
-    bam_file = run_star(genome_dir=my_genome_dir, read1=my_cut_fq1, read2=my_cut_fq2, tmp_dir=tmp_dir)
-
-    # Now run rsem
-    if bam_file is not None:
-        rsem_out = run_rsem(tmp_dir=my_references, bam_file=bam_file, output_dir="/output", prefix=prefix)
-        if rsem_out is not None and token is not None:
-            submit_to_otter(token=my_token, tpm=f"/output/{prefix}.genes.results", email=email, save=save)
-
-    return None
+    logger = logging.getLogger()
+except FileNotFoundError as e:
+    print(f"Error configuring logging: {e}")
+    sys.exit(1)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog='pre-otter',
-                                     description="Process RNA-seq fastqs to gene expression counts, TPM.")
-    parser.add_argument("-r1", "--read1", required=True, metavar='', type=str,
-                        help="fastq read1 files, comma separated if more than one.")
-    parser.add_argument("-r2", "--read2", required=True, metavar='', type=str,
-                        help="fastq read2 files, comma separated if more than one.")
+def set_log_level(debug: bool):
+    """Function to set the logging level dynamically."""
+    if debug:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
+
+# Common argument for both modes
+def common_args(parser):
     parser.add_argument("-p", "--prefix", required=True, metavar='', type=str,
                         help="Prefix to be used for the output files.")
+    parser.add_argument("--om", action="store_true", required=False,
+                        help="Use Otter model instead of hierarchical model.",default=False)
+    parser.add_argument("--v1", required=False, action="store_true",
+                        help="Use version 1 of model instead of version 2.",default=False)
     parser.add_argument("-t", "--token", metavar='', type=str, help="Otter web app API token.")
     parser.add_argument("-e", "--email", type=str, metavar='',
                         help="Comma separate list of email addresses, otter web app will email when analysis complete.")
     parser.add_argument("-s", "--save", action='store_true', dest='save', default=False,
                         help="NOTE: Setting this will allow the otter web app to keep the TPM file sent.")
+
+
+def load_config(config_file):
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    return config['defaults']  # Return the default values from the config file
+
+
+def parse_filenames(value):
+    # This regular expression will match a list of filenames, separated by commas and possibly spaces
+    files = value.split(',')
+    return [item for item in files if item != '']
+
+
+def run_long_read(config, args):
+    with tempfile.TemporaryDirectory(prefix="otter_") as tmp_dir_name:
+        logging.info(f"Created temporary directory: {tmp_dir_name}")
+        long_read.main(config=config, files=args.input, tmp_dir=tmp_dir_name, prefix=args.prefix,
+                       cdna=args.cdna, drna=args.drna, token=args.token, email=args.email, 
+                       save=args.save, om=args.om, v1=args.v1)
+    logging.info("Returned from long-read script.")
+
+
+def run_short_read(args):
+    with tempfile.TemporaryDirectory(prefix="otter_") as tmp_dir_name:
+        logging.info(f"Created temporary directory: {tmp_dir_name}")
+        short_read.main(this_read1s=args.read1, this_read2s=args.read2, tmp_dir=tmp_dir_name, prefix=args.prefix,
+                        token=args.token, email=args.email, save=args.save, om=args.om, v1=args.v1)
+    logging.info("Returned from short-read script.")
+
+
+def main():
+    # Load defaults from config file
+    try:
+        config = load_config('/opt/params.config')
+    except KeyError:
+        config = load_config(os.path.join(repo_dir, "scripts",  "params.config"))
+    parser = argparse.ArgumentParser(prog='pre-otter',
+                                     description="Process RNA-seq fastqs to gene expression counts, TPM.")
+
+    parser.add_argument("-b", "--debug", action='store_true', dest='debug', default=False, help="Debug.")
+    # General mode argument to select long-read or short-read
+    # Define the subparsers for different modes
+    subparsers = parser.add_subparsers(dest='mode', help='Mode of operation')
+    short_read_parser = subparsers.add_parser('short-read', help='Run in short-read mode.')
+    long_read_parser = subparsers.add_parser('long-read', help='Run in long-read mode.')
+
+    # Arguments for short-read mode
+    short_read_parser.add_argument("-r1", "--read1", required=True, metavar='', type=str,
+                        help="fastq read1 files, comma separated if more than one.")
+    short_read_parser.add_argument("-r2", "--read2", required=True, metavar='', type=str,
+                        help="fastq read2 files, comma separated if more than one.")
+    common_args(short_read_parser)
+
+    # Arguments for long-read mode
+    long_read_parser.add_argument("-i", "--input", required=True, metavar='', type=str,
+                        help="input file(s) seperated by comma or single input directory.")
+    long_read_parser.add_argument("-c", "--cdna", default=config.get('cdna', "PCB114"), metavar='', type=str,
+                        help="cDNA reads library kit used, SQK-PCB114 by default.")
+    long_read_parser.add_argument("-d", "--drna", action='store_true', dest='drna', default=config.getboolean('drna', False),
+                        help="direct RNA sequencing skipping read trimming, set to FALSE by default.")
+    common_args(long_read_parser)
+
+    # Parse all arguments
     args = parser.parse_args()
 
-    read1s, read2s, my_email = None, None, None
-    if args.read1 is not None:
-        read1s = check_files_exist(fastqs=args.read1)
-    if args.read2 is not None:
-        read2s = check_files_exist(fastqs=args.read2)
-    my_prefix = args.prefix
-    my_token = args.token
-    if args.email is not None:
-        my_email = args.email.split(",")
-    my_save = args.save
+    if args.debug:
+        set_log_level(debug=True)
 
-    # Check files exist
-    if read1s is None or read2s is None:
-        print("Files not found.")
-        exit(1)
+    # Handle the case where mode is not specified
+    if args.mode is None:
+        print("Please specify a mode: short-read or long-read.")
+        return
+    
+    # Warn about lack of user credentials
+    if args.token is None:
+        logging.warning("OTTER token was not specified.")
 
-    # Check /tmp is available
-    with tempfile.TemporaryDirectory(prefix="moose_") as tmp_dir_name:
-        print('created temporary directory', tmp_dir_name)
-        asyncio.run(main(this_read1s=read1s, this_read2s=read2s,
-                         tmp_dir=tmp_dir_name, prefix=my_prefix,
-                         token=my_token, email=my_email, save=my_save))
+    if args.email is None:
+        logging.warning("User email was not specified.")
+
+    # Handle mode selection and script execution
+    if args.mode == "long-read":
+        if args.input is None:
+            print("For long-read mode, -i is required.")
+            sys.exit(1)
+        run_long_read(config, args)
+
+    elif args.mode == "short-read":
+        if args.read1 is None or args.read2 is None:
+            print("For short-read mode, -r1 and -r2 are required.")
+            sys.exit(1)
+        run_short_read(args)
+
+
+if __name__ == "__main__":
+    repo_dir = os.path.dirname(os.path.realpath(__file__))
+    main()
     exit(0)
