@@ -1,0 +1,2 @@
+sample,fusion genes,chrom1,base1,strand1,chrom2,base2,strand2,gap (kb),spanning pairs,spanning reads,inframe,aligns,rearrangement,contig,contig break,classification,known,test
+all,SERINC3:PKIG,chr20,44521913,-,chr20,44589797,+,67.882,0,1,FALSE,TRUE,TRUE,fd159241-5c01-4860-aaa1-fffbd3614e00,171,PotentialTransSplicing,-,test

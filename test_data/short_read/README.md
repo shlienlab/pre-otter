@@ -11,6 +11,8 @@ singularity exec -e \
     -p pre-otter_short_read_test \
     -t $MY_OTTER_API_TOKEN \
     -e email1@host.com,email2@host.com \
-    -S  
+    -s  
 ```
 The expected output from the test is also in the `/test_data` folder.
+
+Note, the demo dataset is a small subset of data from [Chen et al. Nature Methods (2025)](https://www.nature.com/articles/s41592-025-02623-4). For more information, check the [SG-NEx](https://github.com/GoekeLab/sg-nex-data/) website. 
