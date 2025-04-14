@@ -223,7 +223,7 @@ def run_rsem(tmp_dir: str, ref_dir: str, bam_file: str, output_dir: str, prefix:
 
 
 def submit_to_otter(token: str, tpm: str, email: str = None, save: bool = False,
-                    om:bool = False, v1: bool = False) -> None:
+                    om:bool = False, v2: bool = False) -> None:
     """
     Submits the data TPM file to the otter web app throug hthe API.
     :param token: (str) API token for the account to be used for submission.
@@ -231,7 +231,7 @@ def submit_to_otter(token: str, tpm: str, email: str = None, save: bool = False,
     :param email: (list) A list of email addresses that the otter web app will notify of results completion.
     :param save: (bool) A switch to allow the otter web app to save the TPM file sent to it.
     :param om: (bool) A switch to use the otter web app's otter model.
-    :param v1: (bool) A switch to use the otter web app's version 1 atlas.
+    :param v2: (bool) A switch to use the otter web app's version 2 atlas.
     :return: None
     """
     df = pd.read_csv(tpm, sep='\t')
@@ -239,12 +239,12 @@ def submit_to_otter(token: str, tpm: str, email: str = None, save: bool = False,
     data_name = tpm.split('/')[-1]
 
     headers = {"Authorization": f"Bearer {token}"}
-    post_data = {"version": "hierarchical", "data": data_list, "name": data_name, "save": save, "atlas_version": "v2",}
+    post_data = {"version": "hierarchical", "data": data_list, "name": data_name, "save": save, "atlas_version": "v1",}
     if om:
         post_data["version"] = "otter"
         post_data["atlas_version"] = "v1"
-    if v1:
-        post_data["atlas_version"] = "v1"
+    if v2:
+        post_data["atlas_version"] = "v2"
     if email:
         email_split = email.split(",") if email is not None else None
         post_data["share_with"] = email_split
@@ -284,14 +284,14 @@ def submit_to_otter(token: str, tpm: str, email: str = None, save: bool = False,
                 break
             time.sleep(2)
     else:
-        logging.info(f"Failed to post {data_name}")
-        logging.info(r.status_code, r.text)
+        print(f"Failed to post {data_name}")
+        print(r.status_code, r.text)
         exit(1)
     return None
 
 
 def main(this_read1s: str, this_read2s: str, tmp_dir: str, prefix: str, token: str, save: bool, email: str,
-         om: bool = False, v1: bool = False) -> None:
+         om: bool = False, v2: bool = False) -> None:
     """
     Run the workflow of tasks
     :param this_read1s: (list) filepaths of read1 files.
@@ -302,7 +302,7 @@ def main(this_read1s: str, this_read2s: str, tmp_dir: str, prefix: str, token: s
     :param save: (bool) Flag for telling otter web app to save the TPM file data.
     :param email: (list) Email addresses to notify when otter results are ready.
     :param om: (bool) Flag for using otter's first model instead of hierarchical.
-    :param v1: (bool) Flag for using otter's version 1 atlas.
+    :param v2: (bool) Flag for using otter's version 2 atlas.
     :return: None
     """
     gtf = lambda: uncompress_file(file="/opt/gencode.v23.annotation.gtf.gz", out_dir="/reference")
@@ -351,7 +351,7 @@ def main(this_read1s: str, this_read2s: str, tmp_dir: str, prefix: str, token: s
                             prefix=prefix)
         if rsem_out is not None and token is not None:
             logging.info("SUBMITTING TO OTTER.")
-            submit_to_otter(token=token, tpm=f"/output/{prefix}.genes.results", email=email, save=save, om=om, v1=v1)
+            submit_to_otter(token=token, tpm=f"/output/{prefix}.genes.results", email=email, save=save, om=om, v2=v2)
 
     return None
 

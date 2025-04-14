@@ -14,8 +14,8 @@ from scripts import short_read, long_read
 # Set up logging configuration to log to both terminal and file
 logging_dir = "/output"
 if not os.path.exists(logging_dir):
-    logging_dir = os.getcwd()
-    print(f"/output directory not found for logging. Using current directory instead: {logging_dir}")
+    print(f"/output directory not found.")
+    sys.exit(1)
 
 try:
     logging.basicConfig(
@@ -42,17 +42,17 @@ def set_log_level(debug: bool):
 
 # Common argument for both modes
 def common_args(parser):
-    parser.add_argument("-p", "--prefix", required=True, metavar='', type=str,
-                        help="Prefix to be used for the output files.")
+    parser.add_argument("-p", "--prefix", required=False, metavar='', type=str,
+                        help="prefix to be used for the output files.")
     parser.add_argument("--om", action="store_true", required=False,
-                        help="Use Otter model instead of hierarchical model.",default=False)
-    parser.add_argument("--v1", required=False, action="store_true",
-                        help="Use version 1 of model instead of version 2.",default=False)
-    parser.add_argument("-t", "--token", metavar='', type=str, help="Otter web app API token.")
+                        help="use otter model instead of hierarchical model.",default=False)
+    parser.add_argument("--v2", required=False, action="store_true",
+                        help="use version 2 of model instead of version 1.",default=False)
+    parser.add_argument("-t", "--token", metavar='', type=str, help="otter web app API token.")
     parser.add_argument("-e", "--email", type=str, metavar='',
-                        help="Comma separate list of email addresses, otter web app will email when analysis complete.")
+                        help="comma separate list of email addresses, otter web app will email when analysis complete.")
     parser.add_argument("-s", "--save", action='store_true', dest='save', default=False,
-                        help="NOTE: Setting this will allow the otter web app to keep the TPM file sent.")
+                        help="NOTE: setting this will allow the otter web app to keep the TPM file sent.")
 
 
 def load_config(config_file):
@@ -71,8 +71,8 @@ def run_long_read(config, args):
     with tempfile.TemporaryDirectory(prefix="otter_") as tmp_dir_name:
         logging.info(f"Created temporary directory: {tmp_dir_name}")
         long_read.main(config=config, files=args.input, tmp_dir=tmp_dir_name, prefix=args.prefix,
-                       cdna=args.cdna, drna=args.drna, token=args.token, email=args.email, 
-                       save=args.save, om=args.om, v1=args.v1)
+                       cdna=args.cdna, drna=args.drna, fusion=args.fusion, test=args.test, token=args.token, 
+                       email=args.email, save=args.save, om=args.om, v2=args.v2)
     logging.info("Returned from long-read script.")
 
 
@@ -80,7 +80,7 @@ def run_short_read(args):
     with tempfile.TemporaryDirectory(prefix="otter_") as tmp_dir_name:
         logging.info(f"Created temporary directory: {tmp_dir_name}")
         short_read.main(this_read1s=args.read1, this_read2s=args.read2, tmp_dir=tmp_dir_name, prefix=args.prefix,
-                        token=args.token, email=args.email, save=args.save, om=args.om, v1=args.v1)
+                        token=args.token, email=args.email, save=args.save, om=args.om, v2=args.v2)
     logging.info("Returned from short-read script.")
 
 
@@ -108,12 +108,16 @@ def main():
     common_args(short_read_parser)
 
     # Arguments for long-read mode
-    long_read_parser.add_argument("-i", "--input", required=True, metavar='', type=str,
+    long_read_parser.add_argument("-i", "--input", metavar='', type=str,
                         help="input file(s) seperated by comma or single input directory.")
     long_read_parser.add_argument("-c", "--cdna", default=config.get('cdna', "PCB114"), metavar='', type=str,
                         help="cDNA reads library kit used, SQK-PCB114 by default.")
     long_read_parser.add_argument("-d", "--drna", action='store_true', dest='drna', default=config.getboolean('drna', False),
                         help="direct RNA sequencing skipping read trimming, set to FALSE by default.")
+    long_read_parser.add_argument("-f", "--fusion", action='store_true', dest='fusion', default=config.getboolean('fusion', False),
+                        help="fusion gene detection, set to FALSE by default.")
+    long_read_parser.add_argument("--test", action='store_true', dest='test', default=config.getboolean('test', False),
+                        help="run a test using demo data with predefined options.")
     common_args(long_read_parser)
 
     # Parse all arguments
@@ -124,7 +128,7 @@ def main():
 
     # Handle the case where mode is not specified
     if args.mode is None:
-        print("Please specify a mode: short-read or long-read.")
+        logging.error("Please specify a mode: short-read or long-read.")
         return
     
     # Warn about lack of user credentials
@@ -136,14 +140,23 @@ def main():
 
     # Handle mode selection and script execution
     if args.mode == "long-read":
+        if args.test is True:
+            args.input = "/test_data/long_read/K562_ont_directRNA_10k_subsample.fastq.gz"
+            args.prefix = "test"
         if args.input is None:
-            print("For long-read mode, -i is required.")
+            logging.error("For long-read mode, -i is required.")
+            sys.exit(1)
+        if args.prefix is None:
+            logging.error("Argument -p is required.")
             sys.exit(1)
         run_long_read(config, args)
 
     elif args.mode == "short-read":
         if args.read1 is None or args.read2 is None:
-            print("For short-read mode, -r1 and -r2 are required.")
+            logging.error("For short-read mode, -r1 and -r2 are required.")
+            sys.exit(1)
+        if args.prefix is None:
+            logging.error("Argument -p is required.")
             sys.exit(1)
         run_short_read(args)
 
